@@ -1,9 +1,11 @@
+{-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE DeriveGeneric #-}
 import Control.Monad
 import Data.Maybe
-import Data.List (sortBy)
+import Data.List (sortBy, isPrefixOf, isSuffixOf)
 import Data.Monoid
 import Data.Ord
 
@@ -16,34 +18,51 @@ import Codec.Archive.Zip
 
 import Control.Monad.IO.Class
 import qualified Data.Map as M
-
-import Control.Monad
 import System.FilePath
 
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Char8 as BS8
 import Codec.Serialise
 import System.Directory
 import qualified Data.Text.Encoding as T
 
+import qualified Stg.GHC.Symbols as GHCSymbols
+import Stg.Program
+
+import Data.Aeson
+import GHC.Generics (Generic)
 
 main :: IO ()
 main = do
   [p] <- getArgs
-  let outdir = replaceExtension p ".truffleghc"
-  createDirectoryIfMissing False outdir
-  withArchive p $ do
-    ents <- getEntries
-    forM_ (M.toList ents) $ \(es,ed) -> do
-      let es' = unEntrySelector es
-      when (takeExtension es' == ".stgbin") $ do
-        x <- decodeStgbin' . BSL.fromStrict <$> getEntry es
+  let outdir = replaceExtension p ".trufflestg"
+  doesDirectoryExist outdir >>= \b -> when b $ removeDirectoryRecursive outdir
+  createDirectory outdir
 
-        liftIO $ writeFileSerialise (outdir </> takeDirectory es') x
-        -- writeFile FilePath String
-        liftIO $ print es
+  modinfoList <- getAppModuleMapping p
+  appModpaks <- collectProgramModules' False (map modModpakPath modinfoList) "main" "Main" GHCSymbols.liveSymbols
+  createDirectory (outdir </> "stg")
+  forM_ appModpaks $ \nm -> do
+    x <- readModpakL nm modpakStgbinPath decodeStgbin'
+    let modn = getModuleName $ moduleName x
+    liftIO $ writeFileSerialise (outdir </> "stg" </> BS8.unpack modn) x
+    print modn
+  info <- getAppInfo p
+  encodeFile (outdir </> "appinfo.json") info
+  createDirectory (outdir </> "libs")
+  forM_ (appLdOptions info) $ \ldopt -> when ("-lHS" `isPrefixOf` ldopt) $ do
+    let basename = "lib" ++ drop 2 (dropEnd 10 ldopt)
+    forM_ (appLibPaths info) $ \libdir -> do
+      listDirectory libdir >>= traverse \f -> do
+        when (basename `isPrefixOf` f &&
+          (".dyn_o_cbits.a" `isSuffixOf` f || ".dyn_o_stubs.a" `isSuffixOf` f)) $ do
+            copyFile (libdir </> f) (outdir </> "libs" </> f)
 
+dropEnd n = reverse . drop n . reverse
 
+instance ToJSON StgAppInfo
+deriving instance Generic StgAppInfo
 
 deriving newtype instance Serialise DataConId
 deriving newtype instance Serialise BinderId

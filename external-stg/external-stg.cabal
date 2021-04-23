@@ -66,9 +66,9 @@ executable mkfullpak
   default-language:    Haskell2010
 
 
-executable fullpack-prep-for-truffle
+executable mktrufflestg
   hs-source-dirs:      app
-  main-is:             fullpack-prep-for-truffle.hs
+  main-is:             mktrufflestg.hs
   build-depends:       base
                      , containers
                      , exceptions
